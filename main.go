@@ -36,6 +36,18 @@ func init() {
 		}
 		port = v
 	}
+
+	n := os.Getenv("numStories")
+	if n == "" {
+		numStories = defaultNumStories
+	} else {
+		v, err := strconv.Atoi(n)
+		if err != nil {
+			log.Fatal(err)
+		}
+		numStories = v
+	}
+
 }
 
 func main() {
