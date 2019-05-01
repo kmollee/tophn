@@ -1,11 +1,12 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,16 +16,30 @@ import (
 )
 
 const (
-	numStories = 15
+	defaultNumStories = 15
+	defaultPort       = 3000
 )
 
+var (
+	port       int
+	numStories int
+)
+
+func init() {
+	p := os.Getenv("PORT")
+	if p == "" {
+		port = defaultPort
+	} else {
+		v, err := strconv.Atoi(p)
+		if err != nil {
+			log.Fatal(err)
+		}
+		port = v
+	}
+}
+
 func main() {
-
-	port := flag.Int("p", 3000, "the port to start the web server on")
-	flag.Parse()
-
-	log.Printf("start listen on: %d", *port)
-
+	log.Printf("listen on:%d", port)
 	db, err := bolt.Open("my.db", 0600, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -51,7 +66,7 @@ func main() {
 	r.HandleFunc("/archive/date/{date}", hdb.Get(tmpl))
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), r); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), r); err != nil {
 		log.Fatal(err)
 	}
 }
