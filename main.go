@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"text/template"
 	"time"
 
@@ -35,25 +36,64 @@ func main() {
 
 func index(tmpl *template.Template) http.HandlerFunc {
 	client := hn.NewClient(http.DefaultClient)
-	return func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		stories, err := client.GetItems(numStories, hn.OnlyStory)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
+	c := &cacheClient{client: client, numStories: numStories, f: hn.OnlyStory, duration: 15 * time.Minute}
+	go c.refresh()
 
-		data := templateData{
-			Stories: stories,
-			Time:    time.Now().Sub(start),
-		}
-		err = tmpl.Execute(w, data)
-		if err != nil {
-			http.Error(w, "Failed to process the template", http.StatusInternalServerError)
-			return
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case err := <-c.err:
+			log.Printf("could not refresh: %v", err)
+			http.Error(w, "Failed to update HN", http.StatusInternalServerError)
+		default:
+			start := time.Now()
+			stories := c.GetItems()
+			data := templateData{
+				Stories: stories,
+				Time:    time.Now().Sub(start),
+			}
+			err := tmpl.Execute(w, data)
+			if err != nil {
+				http.Error(w, "Failed to process the template", http.StatusInternalServerError)
+				return
+			}
 		}
 
 	}
+}
+
+type cacheClient struct {
+	client      *hn.Client
+	numStories  int
+	f           hn.Filter
+	rwlock      sync.RWMutex
+	duration    time.Duration
+	refreshTime time.Time
+	items       []*hn.Item
+	err         chan error
+}
+
+func (c *cacheClient) refresh() {
+	ticker := time.Tick(c.duration)
+	for {
+		items, err := c.client.GetItems(c.numStories, c.f)
+		if err != nil {
+			log.Printf("ERR: %v", err)
+			c.err <- err
+			return
+		}
+		c.rwlock.Lock()
+		c.items = items
+		c.rwlock.Unlock()
+		<-ticker
+	}
+
+}
+
+func (c *cacheClient) GetItems() []*hn.Item {
+	c.rwlock.RLock()
+	defer c.rwlock.RUnlock()
+
+	return c.items
 }
 
 type templateData struct {
