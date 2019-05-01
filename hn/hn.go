@@ -2,6 +2,8 @@
 package hn
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -90,7 +92,7 @@ type Filter func(item *Item) bool
 
 // OnlyStory :filter out only story
 func OnlyStory(item *Item) bool {
-	return item.Type == "story"
+	return item.Type == "story" && item.URL != ""
 }
 
 // GetItems :get HN n item's that fit fitler
@@ -114,6 +116,27 @@ func (c *Client) GetItems(n int, f Filter) ([]*Item, error) {
 		if at == n {
 			return items, nil
 		}
+	}
+	return items, nil
+}
+
+func ItemsEncode(items []*Item) ([]byte, error) {
+	buf := new(bytes.Buffer)
+	enc := gob.NewEncoder(buf)
+	err := enc.Encode(items)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func ItemsDecode(b []byte) ([]Item, error) {
+	r := bytes.NewReader(b)
+	dec := gob.NewDecoder(r)
+	var items []Item
+	err := dec.Decode(&items)
+	if err != nil {
+		return nil, err
 	}
 	return items, nil
 }
