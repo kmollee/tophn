@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	numStories = 10
+	numStories = 15
 )
 
 func main() {
@@ -25,8 +25,13 @@ func main() {
 	log.Printf("start listen on: %d", *port)
 
 	tmpl := template.Must(template.ParseFiles("template/index.html"))
+	client := hn.NewClient(http.DefaultClient)
+	// c := &cacheClient{client: client, numStories: numStories, f: hn.OnlyStory, duration: 15 * time.Minute}
+	c := newCacheHnClient(client, numStories, hn.OnlyStory, 15*time.Minute)
+	go c.refresh()
+
 	r := mux.NewRouter()
-	r.HandleFunc("/", index(tmpl))
+	r.HandleFunc("/", c.index(tmpl))
 	r.PathPrefix("/static/").Handler(http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
 	if err := http.ListenAndServe(fmt.Sprintf(":%d", *port), r); err != nil {
@@ -34,21 +39,44 @@ func main() {
 	}
 }
 
-func index(tmpl *template.Template) http.HandlerFunc {
-	client := hn.NewClient(http.DefaultClient)
-	c := &cacheClient{client: client, numStories: numStories, f: hn.OnlyStory, duration: 15 * time.Minute}
-	go c.refresh()
+type hnCacheClient struct {
+	client     *hn.Client
+	numStories int
+	f          hn.Filter
+	rwlock     sync.RWMutex
+	duration   time.Duration
+	items      []*hn.Item
+	err        chan error
+}
 
+func newCacheHnClient(c *hn.Client, num int, f hn.Filter, cacheTime time.Duration) *hnCacheClient {
+	return &hnCacheClient{
+		client:     c,
+		numStories: num,
+		f:          f,
+		duration:   cacheTime,
+		err:        make(chan error),
+	}
+
+}
+
+func (h *hnCacheClient) index(tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		select {
-		case err := <-c.err:
-			log.Printf("could not refresh: %v", err)
-			http.Error(w, "Failed to update HN", http.StatusInternalServerError)
+		case err := <-h.err:
+			log.Printf("ERR: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
 		default:
 			start := time.Now()
-			stories := c.GetItems()
+
+			var items []*hn.Item
+			h.rwlock.RLock()
+			items = h.items
+			h.rwlock.RUnlock()
+
 			data := templateData{
-				Stories: stories,
+				Stories: items,
 				Time:    time.Now().Sub(start),
 			}
 			err := tmpl.Execute(w, data)
@@ -57,43 +85,24 @@ func index(tmpl *template.Template) http.HandlerFunc {
 				return
 			}
 		}
-
 	}
+
 }
 
-type cacheClient struct {
-	client      *hn.Client
-	numStories  int
-	f           hn.Filter
-	rwlock      sync.RWMutex
-	duration    time.Duration
-	refreshTime time.Time
-	items       []*hn.Item
-	err         chan error
-}
-
-func (c *cacheClient) refresh() {
-	ticker := time.Tick(c.duration)
+func (h *hnCacheClient) refresh() {
+	ticker := time.Tick(h.duration)
 	for {
-		items, err := c.client.GetItems(c.numStories, c.f)
+		items, err := h.client.GetItems(h.numStories, h.f)
 		if err != nil {
 			log.Printf("ERR: %v", err)
-			c.err <- err
+			h.err <- err
 			return
 		}
-		c.rwlock.Lock()
-		c.items = items
-		c.rwlock.Unlock()
+		h.rwlock.Lock()
+		h.items = items
+		h.rwlock.Unlock()
 		<-ticker
 	}
-
-}
-
-func (c *cacheClient) GetItems() []*hn.Item {
-	c.rwlock.RLock()
-	defer c.rwlock.RUnlock()
-
-	return c.items
 }
 
 type templateData struct {
